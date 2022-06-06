@@ -20,18 +20,29 @@ from pennylane import numpy as np
 from torch.distributions import Categorical
 
 import wandb
+import argparse
 
-episodes=1000
-n_layers = 4
+parser = argparse.ArgumentParser()
+parser.add_argument('--device', type=int, default=0) #cuda device
+parser.add_argument('--lr', type=float, default=0.1)  #learning rate
+parser.add_argument('--episodes', type=int, default=1000) #number of episodes    
+parser.add_argument('--gamma', type=float, default=0.99) #discount factor                                  
+parser.add_argument('--init', type=str, default="random") #discount factor                                  
+parser.add_argument('--n_layers', type=int, default=3) #discount factor                                  
+parser.add_argument('--batch_size', type=int, default=10) #discount factor                                  
+args = parser.parse_args()
+
+episodes=args.episodes
+n_layers = args.n_layers
 n_qubits = 4    
-lr_q = 0.1
-batch_size = 10
+lr_q = args.lr
+batch_size = args.batch_size
 basis_change=False 
 ent="mod"
-init="normal"
-nm = "BORN-RX-layers-{}||lr-{}||entanglement-{}||basis_change-{}||init-{}||batch-{}||episodes-{}".format(n_layers,lr_q,ent,basis_change,init,batch_size,episodes)
-'''
-#wandb.init(name=nm,project="qPG")#, entity="quantumai")
+init=args.init
+nm = "RX-layers-{}||lr-{}||entanglement-{}||basis_change-{}||init-{}||batch-{}||episodes-{}".format(n_layers,lr_q,ent,basis_change,init,batch_size,episodes)
+
+wandb.init(name=nm,project="qPG")#, entity="quantumai")
 
 wandb.config = {
   "learning_rate": lr_q,
@@ -39,7 +50,7 @@ wandb.config = {
   "batch_size": batch_size,
   "layers": n_layers
 }
-'''
+
 device = qml.device("default.qubit", wires = n_qubits)
 
 def normalize(vector):
@@ -112,9 +123,9 @@ def qcircuit(inputs, weights0):
     #SEL(weights0, wires=range(n_qubits))#, rotation=qml.RY)
     #ansatz(weights1, n_layers=1, change_of_basis=True, entanglement=None)
 
-    #return [expectation(Z(0)), expectation(Z(1)), expectation(Z(2))]
+    return [expectation(Z(0)), expectation(Z(1))]
     #return [expectation(Z(0)), expectation(Z(1))]# @ Z(1) @ Z(2))]
-    return qml.probs(wires=0)# @ Z(1) @ Z(2))]
+    #return qml.probs(wires=0)# @ Z(1) @ Z(2))]
 
 
 class policy_estimator_q(nn.Module):        
@@ -124,14 +135,25 @@ class policy_estimator_q(nn.Module):
         weight_shapes = {"weights0":(n_layers, n_qubits,2)}#,"weights1":(1,n_qubits,3)}#,"weights2":(n_layers,n_qubits,3),"weights3":(n_layers,n_qubits,3),"weights4":(n_layers,n_qubits,3)}#, "weights5":(1,n_qubits,3)}
         import functools
 
-        self.uniform = functools.partial(torch.nn.init.uniform_, a=-np.pi, b=np.pi)
-        self.glorot = functools.partial(torch.nn.init.normal_, mean=0.0, std=np.sqrt(1/3))
-        self.normal = functools.partial(torch.nn.init.normal_, mean=0.0, std=1)
+        if args.init == "random":
+            self.qlayer = qml.qnn.TorchLayer(qcircuit, weight_shapes)
+        elif args.init == "glorot":
+            self.init_method_normal = functools.partial(torch.nn.init.normal_, mean=0.0, std=np.sqrt(2/7))
+            self.qlayer = qml.qnn.TorchLayer(qcircuit, weight_shapes, self.init_method_normal)
+        elif args.init == "random_-1_1":
+            self.init_method = functools.partial(torch.nn.init.uniform_, a=-1, b=1)
+            self.qlayer = qml.qnn.TorchLayer(qcircuit, weight_shapes, self.init_method)
+        elif args.init == "random_-pi_pi":
+            self.init_method = functools.partial(torch.nn.init.uniform_, a=-np.pi, b=np.pi)
+
+        #self.uniform = functools.partial(torch.nn.init.uniform_, a=-np.pi, b=np.pi)
+        #self.glorot = functools.partial(torch.nn.init.normal_, mean=0.0, std=np.sqrt(1/3))
+        #self.normal = functools.partial(torch.nn.init.normal_, mean=0.0, std=1)
         #self.uniform_values = torch.nn.init.uniform_(weight_shapes["weights0"],a=min_value,b=max_value)
         #self.normal = torch.nn.init.normal_
-        self.qlayer = qml.qnn.TorchLayer(qcircuit, weight_shapes, self.normal)
-        #self.fc1 = nn.Linear(3, 3)
-        #self.beta = nn.Parameter(torch.ones(1), requires_grad=True)
+        #self.qlayer = qml.qnn.TorchLayer(qcircuit, weight_shapes, self.normal)
+        #self.fc1 = nn.Linear(4, 16)
+        self.beta = nn.Parameter(torch.ones(1), requires_grad=True)
         #self.ws = nn.Parameter(torch.ones(3), requires_grad=True)
     
 
@@ -141,9 +163,9 @@ class policy_estimator_q(nn.Module):
         out = self.qlayer(torch.FloatTensor(state))
         #out=self.fc1(out)
         #out = torch.multiply(self.ws,out)
-        #action_probs = F.softmax(self.beta*out, dim=-1)
+        action_probs = F.softmax(self.beta*out, dim=-1)
         #probs = self.forward(state)
-        m = Categorical(out)
+        m = Categorical(action_probs)
         action = m.sample()
         return action.item(), m.log_prob(action)
         #action_probs = F.softmax(3*out, dim=-1)
